@@ -27,6 +27,11 @@ _require_scratch
 _require_dm_target flakey
 _require_xfs_io_command "falloc" "-k"
 _require_xfs_io_command "fiemap"
+# The golden output asserts extents covering the preallocated ranges
+# beyond i_size. A filesystem that satisfies fallocate without
+# allocating unwritten extents (ZFS reserves space but writes nothing)
+# has no extents there for fiemap to report.
+_require_unwritten_extents
 
 _scratch_mkfs >>$seqres.full 2>&1
 _require_metadata_journaling $SCRATCH_DEV

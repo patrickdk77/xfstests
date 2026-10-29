@@ -23,6 +23,7 @@ _require_test
 _require_odirect
 _require_xfs_io_command "fiemap"
 _require_xfs_io_command "falloc"
+_require_unwritten_extents
 
 fiemapfile=$TEST_DIR/$seq.fiemap
 

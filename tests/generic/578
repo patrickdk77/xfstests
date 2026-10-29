@@ -25,6 +25,11 @@ _require_command "$FILEFRAG_PROG" filefrag
 _require_xfs_io_command "fiemap"
 _require_test_reflink
 _require_cp_reflink
+# Uses 64k reflink blocks. On ZFS a recordsize below 32k fragments the 64k
+# writes and changes the extent layout; recordsize 32k-64k reproduces it
+# deterministically (above 64k the test's own _require_congruent_file_oplen
+# already skips it).
+_require_recordsize_range $TEST_DIR 32768 65536
 
 compare() {
 	for i in $(seq 1 8); do

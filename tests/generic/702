@@ -40,9 +40,27 @@ fiemap_test_file()
 	# The third column is the physical location of the extents, so it's
 	# omitted because the location varies between different filesystems.
 	#
+	#
+	# Coalesce adjacent extents that have the same shared state (and are
+	# logically contiguous) before printing. This keeps exactly what the
+	# test verifies -- which byte ranges are shared vs not -- without
+	# assuming each region is reported as a single physical extent. On
+	# filesystems that already report a region contiguously the coalesce is
+	# a no-op; on copy-on-write filesystems like ZFS, where the records of a
+	# region may not be physically adjacent, fiemap correctly reports them
+	# as separate extents and the coalesce makes the shared/not-shared
+	# ranges match.
 	$XFS_IO_PROG -c "fiemap -v" $filepath | tail -n +3 | \
-		$AWK_PROG '{ print $1, $2, $4, \
-			  and(strtonum($5), 0x2000) ? "shared" : "not_shared" }'
+		$AWK_PROG '
+		{
+			r=$2; gsub(/\[/,"",r); gsub(/\]/,"",r); gsub(/:/,"",r); gsub(/[.]/," ",r);
+			split(r,a," "); s=a[1]+0; e=a[2]+0; sz=$4+0;
+			st=and(strtonum($5),0x2000) ? "shared" : "not_shared";
+			if (ff=="") { rs=s; re=e; rsz=sz; rst=st; ff=1; next }
+			if (st==rst && s==re+1) { re=e; rsz+=sz }
+			else { printf "%d: [%d..%d]: %d %s\n", idx++, rs, re, rsz, rst; rs=s; re=e; rsz=sz; rst=st }
+		}
+		END { if (ff!="") printf "%d: [%d..%d]: %d %s\n", idx, rs, re, rsz, rst }'
 }
 
 _scratch_mkfs >> $seqres.full

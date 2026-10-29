@@ -18,6 +18,7 @@ _begin_fstest auto quick prealloc fiemap
 _require_scratch
 _require_xfs_io_command "falloc"
 _require_xfs_io_command "fiemap"
+_require_unwritten_extents
 
 # This test is currently not valid for xfs, see the following thread for details:
 #

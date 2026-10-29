@@ -22,6 +22,13 @@ _sync_fs()
 
 _scratch_sync()
 {
+	if [ "$FSTYP" = "zfs" ]; then
+		# sync/syncfs does not drain a ZFS txg; force one so the data
+		# is actually on disk before callers (e.g. dm-error injection)
+		# depend on it.
+		$ZPOOL_PROG sync $SCRATCH_ZPOOL_NAME
+		return
+	fi
 	_sync_fs $SCRATCH_MNT
 }
 
@@ -2565,6 +2572,17 @@ _require_dm_target()
 	_require_sane_bdev_flush $SCRATCH_DEV
 	_require_command "$DMSETUP_PROG" dmsetup
 
+	# dm-error is supported on ZFS: common/dmerror rebuilds the
+	# scratch pool on top of the dm device with failmode=continue,
+	# so a whole-device error returns EIO and is recovered with
+	# 'zpool clear' (see _zfs_dmerror_init).  dm-flakey has no such
+	# ZFS integration yet, so gate it until that is added.
+	case "$FSTYP:$target" in
+	zfs:flakey)
+		_notrun "ZFS dm-flakey support not implemented"
+		;;
+	esac
+
 	case $target in
 	stripe|linear|log-writes)
 		;;
@@ -2966,6 +2984,109 @@ s,^\s*$,,;
 _user_do()
 {
 	echo $1 | _su -s /bin/bash $qa_user 2>&1 | _filter_user_do
+}
+
+# Some filesystems represent fallocate preallocation (and zero-range) as
+# unwritten extents: blocks that are allocated but read as zeros, reported by
+# fiemap with FIEMAP_EXTENT_UNWRITTEN (0x800). Others, notably copy-on-write
+# filesystems like ZFS, instead use holes plus a space reservation and never
+# create unwritten extents. Tests that assert an "unwritten" extent type after
+# fallocate cannot pass on the latter and are not meaningful there (the
+# functional fallocate behaviour is covered by other tests and by the
+# filesystem's own suite), so _notrun on them.
+_require_unwritten_extents()
+{
+	local testfile=$TEST_DIR/$$.unwritten_probe
+	$XFS_IO_PROG -f -c "falloc 0 65536" $testfile >/dev/null 2>&1
+	local n=$($XFS_IO_PROG -c "fiemap -v" $testfile 2>/dev/null | tail -n +3 | \
+		$AWK_PROG '{ if (and(strtonum($5), 0x800)) n++ } END { print n+0 }')
+	rm -f $testfile
+	[ "$n" -gt 0 ] || \
+		_notrun "filesystem does not create unwritten extents from fallocate"
+}
+
+# Some fiemap/clone tests exercise a fixed extent or hole size and only
+# reproduce the expected layout when the filesystem's allocation unit is
+# compatible with it. On ZFS the allocation unit is the (tunable) dataset
+# recordsize, so the same test can pass at one recordsize and fail at another: a
+# recordsize smaller than the test's write size fragments a fixed-size write
+# into scattered records, and a recordsize larger than the test's hole size
+# swallows a fixed-size hole into a single record. Gate such a test to the
+# recordsize range in which its golden output is reproducible. No-op on
+# filesystems whose allocation unit is not the ZFS recordsize.
+# Usage: _require_recordsize_range <dir> <min_bytes> <max_bytes>  (max 0 = none)
+_require_recordsize_range()
+{
+	[ "$FSTYP" = "zfs" ] || return 0
+	local dir=$1 min=$2 max=$3
+	local src rs
+	src=$(df --output=source "$dir" 2>/dev/null | tail -1)
+	rs=$($ZFS_PROG get -Hp -o value recordsize "$src" 2>/dev/null)
+	[ -n "$rs" ] || return 0
+	if [ "$rs" -lt "$min" ]; then
+		_notrun "recordsize $rs below test minimum $min"
+	fi
+	if [ "$max" -ne 0 ] && [ "$rs" -gt "$max" ]; then
+		_notrun "recordsize $rs above test maximum $max"
+	fi
+}
+
+# Some clone tests assert that a reflinked file, randomly overwritten with
+# copy-on-write, stays under two thirds of its blocks in extents -- i.e. that
+# the allocator merges or delay-allocates adjacent CoW writes. Pure
+# copy-on-write filesystems like ZFS allocate every overwrite independently and
+# fully fragment the file, so the assertion cannot hold and the test is not
+# meaningful there. Probe the behaviour directly: reflink a file, overwrite
+# every block in random order, and _notrun if the result does not stay
+# substantially unfragmented. Data-integrity of clones is covered elsewhere.
+# Usage: _require_cow_extent_merge <dir-on-a-reflink-capable-mount>
+_require_cow_extent_merge()
+{
+	local dir="$1/$$.cowmerge"
+	local bs nr sz ext
+	mkdir -p "$dir" || return 0
+	bs=$(_get_block_size "$dir")
+	nr=64
+	sz=$((bs * nr))
+	$XFS_IO_PROG -f -c "pwrite -b $sz 0 $sz" "$dir/a" >/dev/null 2>&1
+	_cp_reflink "$dir/a" "$dir/b" >/dev/null 2>&1
+	$XFS_IO_PROG -c "pwrite -R -b $bs 0 $sz" -c "fdatasync" "$dir/b" \
+		>/dev/null 2>&1
+	ext=$(_count_extents "$dir/b")
+	rm -rf "$dir"
+	[ -n "$ext" ] || return 0
+	[ "$ext" -lt $((nr * 2 / 3)) ] || \
+		_notrun "filesystem fully fragments random copy-on-write overwrites"
+}
+
+# generic/302 has a looser bound than generic/301: after random copy-on-write it
+# requires no more extents than filesize/blocksize. Because the file is written
+# one byte past filesize it actually holds one more block than that, so the
+# bound requires the allocator to merge at least one adjacent CoW pair. raidz
+# spreads every rewritten record onto a different disk offset, so no two records
+# end up adjacent, the extent count reaches the full block total (one over the
+# bound), and the test fails -- while single-disk and multi-vdev stripe pools
+# get at least one lucky adjacency and pass. Probe with the same shape and
+# _notrun only where the allocator merges no CoW extents at all.
+# Usage: _require_cow_extents_within_blocks <dir-on-a-reflink-capable-mount>
+_require_cow_extents_within_blocks()
+{
+	local dir="$1/$$.cowfrag"
+	local bs nr fsz ext i
+	mkdir -p "$dir" || return 0
+	bs=$(_get_block_size "$dir")
+	nr=64
+	fsz=$((bs * nr))
+	$XFS_IO_PROG -f -c "pwrite -b $fsz 0 $((fsz + 1))" "$dir/a" >/dev/null 2>&1
+	_cp_reflink "$dir/a" "$dir/b" >/dev/null 2>&1
+	for i in 1 2 3 4 5 6 7 8; do
+		$XFS_IO_PROG -d -c "pwrite -R -b $bs 0 $fsz" "$dir/b" >/dev/null 2>&1
+	done
+	ext=$(_count_extents "$dir/b")
+	rm -rf "$dir"
+	[ -n "$ext" ] || return 0
+	[ "$ext" -le "$nr" ] || \
+		_notrun "filesystem does not merge any random copy-on-write extents"
 }
 
 _require_xfs_io_command()

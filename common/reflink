@@ -178,6 +178,33 @@ _require_scratch_dedupe()
 	_scratch_unmount
 }
 
+# FIDEDUPERANGE deduplicates whole blocks. Some filesystems can additionally
+# deduplicate a request whose range contains no full filesystem block -- e.g. a
+# lone partial/EOF block -- which xfs and btrfs do, but block-granular
+# implementations (such as ZFS block cloning) reject with EINVAL. Tests that
+# deduplicate a lone partial block require this capability; _notrun otherwise.
+_require_dedupe_partial_block()
+{
+	_require_scratch_dedupe
+
+	_scratch_mkfs > /dev/null
+	_scratch_mount
+	# dst has a full-block region; src is a lone partial (sub-block) block with
+	# matching bytes. Deduping the partial block into a block-aligned offset of
+	# the full-block region is what block-granular implementations reject (the
+	# src's partial block cannot be shared into the dst's full block).
+	$XFS_IO_PROG -f -c "pwrite -S 0x61 0 262144" "$SCRATCH_MNT/file1" > /dev/null
+	$XFS_IO_PROG -f -c "pwrite -S 0x61 0 100" "$SCRATCH_MNT/file2" > /dev/null
+	local testio
+	testio="$($XFS_IO_PROG -c "dedupe $SCRATCH_MNT/file2 0 65536 100" \
+		"$SCRATCH_MNT/file1" 2>&1)"
+	_scratch_unmount
+	echo "$testio" | grep -q "Invalid argument" && \
+		_notrun "filesystem cannot deduplicate a lone partial block"
+	echo "$testio" | grep -q "Operation not supported" && \
+		_notrun "filesystem cannot deduplicate a lone partial block"
+}
+
 # Prints a range of a file as a hex dump
 _read_range() {
 	file="$1"

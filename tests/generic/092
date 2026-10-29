@@ -25,6 +25,7 @@ status=0	# success is the default!
 _require_test
 _require_xfs_io_command "falloc"
 _require_xfs_io_command "fiemap"
+_require_unwritten_extents
 
 # If the truncation sizes (5M/7M) aren't aligned with the file allocation unit
 # length, then the FIEMAP output will show blocks beyond EOF.  That will cause

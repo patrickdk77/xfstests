@@ -15,7 +15,9 @@ _begin_fstest auto quick dedupe clone
 . ./common/filter
 . ./common/reflink
 
-_require_scratch_dedupe
+# This test deduplicates a lone partial (EOF) block into the middle of a file;
+# skip on filesystems that can only dedupe whole blocks (implies _require_scratch_dedupe).
+_require_dedupe_partial_block
 
 _scratch_mkfs >>$seqres.full 2>&1
 _scratch_mount

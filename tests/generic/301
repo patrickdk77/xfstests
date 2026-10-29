@@ -24,6 +24,11 @@ echo "Format and mount"
 _scratch_mkfs > $seqres.full 2>&1
 _scratch_mount >> $seqres.full 2>&1
 
+# ZFS is pure copy-on-write and fully fragments a randomly-overwritten reflinked
+# file, so the two-thirds fragmentation bound below cannot hold. Skip where the
+# allocator does not keep such a file substantially unfragmented.
+_require_cow_extent_merge $SCRATCH_MNT
+
 testdir=$SCRATCH_MNT/test-$seq
 mkdir $testdir
 

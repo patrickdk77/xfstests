@@ -73,6 +73,11 @@ _dmerror_setup()
 
 _dmerror_init()
 {
+	if [ "$FSTYP" = "zfs" ]; then
+		_zfs_dmerror_init "$@"
+		return
+	fi
+
 	_dmerror_setup "$@"
 
 	_dmsetup_remove $DMERROR_NAME
@@ -94,6 +99,12 @@ _dmerror_init()
 
 _dmerror_mount()
 {
+	if [ "$FSTYP" = "zfs" ]; then
+		# pool sits on the dm device; mount it by zpool name
+		_scratch_mount $*
+		return
+	fi
+
 	_scratch_options mount
 	$MOUNT_PROG -t $FSTYP `_common_dev_mount_options $*` $SCRATCH_OPTIONS \
 		$DMERROR_DEV $SCRATCH_MNT
@@ -106,6 +117,11 @@ _dmerror_unmount()
 
 _dmerror_cleanup()
 {
+	if [ "$FSTYP" = "zfs" ]; then
+		_zfs_dmerror_cleanup
+		return
+	fi
+
 	test -n "$NON_ERROR_LOGDEV" && $DMSETUP_PROG resume $DMERROR_LOGNAME &>/dev/null
 	test -n "$NON_ERROR_RTDEV" && $DMSETUP_PROG resume $DMERROR_RTNAME &>/dev/null
 	$DMSETUP_PROG resume $DMERROR_NAME > /dev/null 2>&1
@@ -253,6 +269,10 @@ _dmerror_load_working_table()
 
 	[ $load_res -ne 0 ] && _fail "dmsetup failed to load error table"
 	[ $resume_res -ne 0 ] && _fail  "dmsetup resume failed"
+
+	# A whole-device error suspends the ZFS scratch pool; it stays
+	# suspended until cleared, now that the working table is back.
+	[ "$FSTYP" = "zfs" ] && _zfs_dmerror_clear
 }
 
 # Given a list of (start, length) tuples on stdin, combine adjacent tuples into

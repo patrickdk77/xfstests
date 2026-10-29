@@ -16,6 +16,7 @@ _begin_fstest auto quick prealloc zero fiemap
 _require_xfs_io_command "fzero"
 _require_xfs_io_command "fiemap"
 _require_xfs_io_command "falloc"
+_require_unwritten_extents
 _require_test
 
 testfile=$TEST_DIR/009.$$

@@ -25,8 +25,14 @@ testfile=$SCRATCH_MNT/testfile
 dummyfile=$SCRATCH_MNT/dummyfile
 blocksize=$((128 * 1024))
 
-# create a dummy file, which is used to occupy some fs space first.
-_pwrite_byte 0xcdcdcdcd 0 $((1 * 1024 * 1024)) $dummyfile > /dev/null
+# create a dummy file that occupies fs space freed (below) just
+# before the truncate, leaving slack for the truncate's own
+# metadata. CoW filesystems with heavy reflink metadata (e.g.
+# ZFS) need more slack than btrfs's ~1MB; 4MB stays small while
+# sitting above the ~2MB floor measured on ZFS (below ~2MB the
+# freed space is absorbed by the pool reserve and never becomes
+# available on a near-full pool).
+_pwrite_byte 0xcdcdcdcd 0 $((4 * 1024 * 1024)) $dummyfile > /dev/null
 _pwrite_byte 0xcdcdcdcd 0 $blocksize  $testfile > /dev/null
 
 echo "Silence is golden"
@@ -39,10 +45,16 @@ done
 dd if=/dev/zero of=$SCRATCH_MNT/space >/dev/null 2>&1
 _scratch_sync
 
-# fs is full now and fs internal operations may need some free space, for
-# example, in btrfs, transaction will need to reserve space first, so here free
-# 1MB space.
+# fs is full now and fs internal operations may need some free space to truncate
+# the heavily-reflinked file (btrfs reserves transaction space; ZFS needs space
+# for the reflink/BRT metadata). Free the dummy file's space (sized above).
 rm -f $dummyfile
+# ZFS frees an unlinked file's blocks via a deferred-free list
+# that a syncfs (_scratch_sync) does not drain, so without this
+# the slack would not be reclaimed before the truncate and the
+# test flakes on ENOSPC. Force a full pool sync on ZFS to
+# reclaim it deterministically.
+[ "$FSTYP" = "zfs" ] && $ZPOOL_PROG sync "$SCRATCH_ZPOOL_NAME"
 $XFS_IO_PROG -f -c "truncate 0" $testfile
 
 status=0

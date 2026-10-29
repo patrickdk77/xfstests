@@ -17,6 +17,12 @@ _require_test
 _require_xfs_io_command "fpunch"
 _require_xfs_io_command "falloc"
 _require_xfs_io_command "fiemap"
+# _test_generic_punch fallocates regions and expects them reported as (unwritten)
+# extents. ZFS represents fallocate preallocation as holes plus a reservation and
+# never creates unwritten extents, so the alloc regions read back as holes and
+# the expected extent/hole layout cannot match. Functional punch behaviour is
+# covered by the filesystem's own suite.
+_require_unwritten_extents
 
 testfile=$TEST_DIR/255.$$
 

@@ -26,6 +26,15 @@ _cleanup()
 _require_scratch_reflink
 _require_cp_reflink
 
+# ZFS defers mmap-write block allocation to writeback (generic
+# filemap_page_mkwrite), so a CoW store into a full fs never faults
+# SIGBUS; and its statfs free count does not exhaust the pool, so
+# even with msync/fsync the CoW succeeds. The ENOSPC-on-mmap-CoW
+# failure this test looks for cannot be observed on ZFS.
+if [ "$FSTYP" = "zfs" ]; then
+	_notrun "ZFS mmap CoW does not fault SIGBUS on ENOSPC"
+fi
+
 echo "Format and mount"
 _scratch_mkfs > $seqres.full 2>&1
 _scratch_mount >> $seqres.full 2>&1

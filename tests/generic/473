@@ -21,6 +21,12 @@ _require_xfs_io_command "truncate"
 # ranged is a special argument which checks if fiemap supports
 # [offset [len]] args
 _require_xfs_io_command "fiemap" "ranged"
+# Writes 64k data separated by 64k holes. On ZFS a recordsize below 64k splits
+# each 64k write into multiple records whose physical contiguity is not
+# guaranteed (extent count is then allocation-dependent, i.e. flaky), and a
+# recordsize above 64k swallows a 64k hole into a single record. Only recordsize
+# == 64k reproduces the layout deterministically.
+_require_recordsize_range $TEST_DIR 65536 65536
 
 file=$TEST_DIR/fiemap.$seq
 rm -f $file

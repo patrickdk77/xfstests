@@ -8,6 +8,11 @@ seq=$1
 
 . ./common/config
 . ./common/dmerror
+# This helper runs as its own process (exec'd by e.g. src/fsync-err), so it
+# does not go through common/rc's _source_specific_fs.  Pull in the fs-specific
+# helpers directly: _dmerror_load_working_table calls _zfs_dmerror_clear (in
+# common/zfs) to resume the ZFS pool after restoring the working table.
+[ -f "./common/$FSTYP" ] && . "./common/$FSTYP"
 
 if [ -z "$DMERROR_DEV" ]; then
 	echo "Caller should have run _dmerror_init."

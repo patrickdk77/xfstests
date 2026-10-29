@@ -25,6 +25,13 @@ echo "Format and mount"
 _scratch_mkfs > $seqres.full 2>&1
 _scratch_mount >> $seqres.full 2>&1
 
+# The "<= internal_blks" bound requires at least one CoW extent merge (the file
+# has one more block than internal_blks). raidz spreads every rewritten record
+# so no two are adjacent and the count reaches the full block total, one over
+# the bound; single-disk and multi-vdev stripe pools get a merge and pass. Skip
+# only where the allocator merges no CoW extents at all.
+_require_cow_extents_within_blocks $SCRATCH_MNT
+
 testdir=$SCRATCH_MNT/test-$seq
 mkdir $testdir
 

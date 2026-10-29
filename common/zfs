@@ -100,6 +100,65 @@ _zfs_scratch_mount_source()
 	echo "$SCRATCH_ZPOOL_NAME"
 }
 
+# dm-error support.  The generic dm-error harness wraps $SCRATCH_DEV in a
+# dm-linear device and hot-swaps it to the 'error' target to inject a
+# whole-device I/O failure.  ZFS owns its vdev directly, so we rebuild the
+# (empty, freshly mkfs'd) scratch pool on top of the dm device instead.
+#
+# Created failmode=continue so a whole-device error is returned to
+# userspace as EIO instead of blocking forever: failmode=wait (the
+# default) leaves the pool, the app, and even dmsetup wedged in D state,
+# needing a reboot.  The pool suspends on the error and stays suspended
+# until 'zpool clear', which _dmerror_load_working_table issues after
+# restoring the linear table.
+_zfs_dmerror_init()
+{
+	_dmerror_setup "$@"
+
+	_zfs_destroy_scratch_pool
+	_dmsetup_remove $DMERROR_NAME
+	_dmsetup_create $DMERROR_NAME --table "$DMLINEAR_TABLE" || \
+		_fatal "failed to create dm linear device"
+
+	$ZPOOL_PROG create -f -o failmode=continue \
+		$ZFS_SCRATCH_MKFS_OPTS $MKFS_OPTIONS \
+		$SCRATCH_ZPOOL_NAME $DMERROR_DEV || \
+		_fatal "failed to create zpool on dm-error device"
+	_zfs_set_default_recordsize
+
+	# The dm-error injection deliberately fails all pool I/O; ZFS
+	# logs the resulting pool suspension (and the resume on recovery)
+	# as WARNINGs.  Whitelist them so _check_dmesg does not flag the
+	# expected noise.
+	_add_dmesg_filter \
+		"Pool '$SCRATCH_ZPOOL_NAME' has encountered an uncorrectable"
+	_add_dmesg_filter \
+		"Pool '$SCRATCH_ZPOOL_NAME' was suspended and is being resumed"
+}
+
+# Resume a scratch pool left suspended by a whole-device error, after the
+# dm device has been switched back to a working table.
+_zfs_dmerror_clear()
+{
+	$ZPOOL_PROG clear $SCRATCH_ZPOOL_NAME
+}
+
+# Tear down a dm-error scratch pool: switch the dm device back to a working
+# table, clear and destroy the pool (it holds the dm device), remove dm.
+_zfs_dmerror_cleanup()
+{
+	$DMSETUP_PROG suspend --noflush --nolockfs $DMERROR_NAME \
+		>/dev/null 2>&1
+	$DMSETUP_PROG load $DMERROR_NAME --table "$DMLINEAR_TABLE" \
+		>/dev/null 2>&1
+	$DMSETUP_PROG resume $DMERROR_NAME >/dev/null 2>&1
+	$ZPOOL_PROG clear $SCRATCH_ZPOOL_NAME >/dev/null 2>&1
+	_unmount $SCRATCH_MNT >/dev/null 2>&1
+	_zfs_destroy_scratch_pool >/dev/null 2>&1
+	_dmsetup_remove $DMERROR_NAME
+	unset DMERROR_DEV DMLINEAR_TABLE DMERROR_TABLE
+}
+
 _require_zfs_scratch_dev()
 {
 	if [ -z "$SCRATCH_ZPOOL_NAME" ]; then

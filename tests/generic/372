@@ -23,6 +23,26 @@ _cleanup()
 . ./common/filter
 . ./common/reflink
 
+# Count data regions, coalescing fiemap extents that are logically contiguous
+# and share the same shared-state. On filesystems that lay a region out
+# contiguously this equals the raw extent count; on copy-on-write filesystems
+# like ZFS, where a region's records may be physically scattered, it counts the
+# logical regions instead of the physical extents, so the sharing structure
+# this test checks is compared consistently.
+_count_data_regions()
+{
+	$XFS_IO_PROG -c "fiemap -v" $1 | tail -n +3 | $AWK_PROG '
+	{
+		if ($3=="hole") { last=-2; next }
+		r=$2; gsub(/\[/,"",r); gsub(/\]/,"",r); gsub(/:/,"",r); gsub(/[.]/," ",r);
+		split(r,a," "); s=a[1]+0; e=a[2]+0;
+		sh=and(strtonum($5),0x2000) ? 1 : 0;
+		if (started && sh==psh && s==last+1) { last=e }
+		else { count++; psh=sh; last=e; started=1 }
+	}
+	END { print count+0 }'
+}
+
 _require_scratch_reflink
 _require_xfs_io_command "falloc"
 _require_xfs_io_command "fiemap"
@@ -31,6 +51,11 @@ _require_scratch_explicit_shared_extents
 echo "Format and mount"
 _scratch_mkfs > $seqres.full 2>&1
 _scratch_mount >> $seqres.full 2>&1
+
+# Uses 64k reflink operations. On ZFS a recordsize below 64k splits each 64k
+# operation into multiple records whose physical layout is allocation-dependent,
+# so the region count only matches at recordsize == 64k (the operation size).
+_require_recordsize_range $SCRATCH_MNT 65536 65536
 
 testdir=$SCRATCH_MNT/test-$seq
 mkdir $testdir
@@ -46,7 +71,7 @@ _pwrite_byte 0x61 0 $sz $testdir/file1 >> $seqres.full
 _scratch_cycle_mount
 
 echo "file1 extents and holes"
-_count_extents $testdir/file1
+_count_data_regions $testdir/file1
 _count_holes $testdir/file1
 
 _reflink_range $testdir/file1 $blksz $testdir/file2 $((blksz * 3)) $blksz >> $seqres.full
@@ -58,10 +83,10 @@ md5sum $testdir/file1 | _filter_scratch
 md5sum $testdir/file2 | _filter_scratch
 
 echo "file1 extents and holes"
-_count_extents $testdir/file1
+_count_data_regions $testdir/file1
 _count_holes $testdir/file1
 echo "file2 extents and holes"
-_count_extents $testdir/file2
+_count_data_regions $testdir/file2
 _count_holes $testdir/file2
 echo "file1 shared extents"
 $XFS_IO_PROG -c 'fiemap -v' $testdir/file1 | awk '{print $5}' | grep -c '0x.*[2367aAbBfF]...$'

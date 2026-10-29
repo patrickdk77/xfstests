@@ -569,6 +569,9 @@ _scratch_cycle_mount()
 	opts="-o $opts"
     fi
     [ "$unmounted" = true ] || _scratch_unmount
+    # ZFS caches in the pool-wide ARC, which survives a dataset
+    # unmount; export/import actually drops it (see common/zfs).
+    [ "$FSTYP" = "zfs" ] && _zfs_cycle_scratch_pool
     _try_scratch_mount "$opts" || _fail "cycle mount failed"
 }
 
@@ -740,6 +743,9 @@ _test_cycle_mount()
     esac
 
     [ "$unmounted" = true ] || _test_unmount
+    # ZFS caches in the pool-wide ARC, which survives a dataset
+    # unmount; export/import actually drops it (see common/zfs).
+    [ "$FSTYP" = "zfs" ] && _zfs_cycle_test_pool
     _test_mount
 }
 

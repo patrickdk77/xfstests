@@ -100,7 +100,12 @@ _dmerror_init()
 _dmerror_mount()
 {
 	if [ "$FSTYP" = "zfs" ]; then
-		# pool sits on the dm device; mount it by zpool name
+		# pool sits on the dm device; mount it by zpool name.
+		# Callers unmount and remount to drop the cache before
+		# reading through the error table; on ZFS the ARC
+		# outlives the dataset mount, so drop it here or the
+		# read is served from memory and never sees an error.
+		_zfs_cycle_scratch_pool
 		_scratch_mount $*
 		return
 	fi

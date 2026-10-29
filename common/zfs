@@ -30,6 +30,45 @@ _zfs_destroy_scratch_pool()
 	fi
 }
 
+# Drop the ARC for a pool by exporting and re-importing it.
+#
+# Tests cycle a mount to force the next read to come from the device.
+# That works where the cache dies with the mount, but on ZFS the cache
+# is the ARC, which belongs to the pool, not the dataset: unmounting a
+# dataset leaves the pool imported and every block still cached, so the
+# read never reaches the device and the test silently verifies against
+# memory.  Exporting the pool is what actually drops it.  A suspended
+# pool cannot be exported, so leave it alone.
+_zfs_cycle_pool()
+{
+	local pool=$1
+	[ -n "$pool" ] || return 0
+
+	local health
+	health=$($ZPOOL_PROG list -H -o health $pool 2>/dev/null)
+	[ -n "$health" ] || return 0
+	[ "$health" = "SUSPENDED" ] && return 0
+
+	$ZPOOL_PROG export $pool >/dev/null 2>&1 || return 0
+	# Search /dev/mapper too: the pool may sit on a dm device
+	# (dm-error) or on a loop device stacked on $SCRATCH_DEV.
+	$ZPOOL_PROG import -d /dev -d /dev/mapper $pool >/dev/null 2>&1 || \
+		$ZPOOL_PROG import $pool >/dev/null 2>&1 || \
+		_fail "failed to re-import $pool after ARC drop"
+}
+
+_zfs_cycle_scratch_pool()
+{
+	_zfs_require_scratch_zpool_name
+	_zfs_cycle_pool $SCRATCH_ZPOOL_NAME
+}
+
+# $TEST_DEV is pool/dataset; the ARC belongs to the pool.
+_zfs_cycle_test_pool()
+{
+	_zfs_cycle_pool "${TEST_DEV%%/*}"
+}
+
 ZFS_SCRATCH_MKFS_OPTS="-O mountpoint=legacy -O relatime=off -O compression=off"
 
 # recordsize=64K (vs the 128K ZFS default) so tests that gate on
@@ -85,12 +124,18 @@ _zfs_test_mkfs()
 	$ZFS_PROG create -o mountpoint=legacy $* $TEST_DEV
 }
 
-# Variant of _zfs_scratch_mkfs used by _try_mkfs_dev where the device name is
-# explicitly passed in by the caller.
+# _try_mkfs_dev builds a filesystem on a device the test supplies itself:
+# a loop device or image inside $SCRATCH_MNT, an LVM volume, a scsi_debug
+# disk.  The test then mounts that device directly.  Neither half maps to
+# ZFS.  Making a filesystem there means a second pool, but a pool is
+# mounted by dataset name, not by its backing device, so the test's mount
+# has nothing to name; and the pool cannot reuse $SCRATCH_ZPOOL_NAME,
+# which is already imported ("cannot create 'scratch': pool already
+# exists" -- how generic/648 failed).  Skip instead of failing, so these
+# tests report why rather than needing to be listed in exclude.zfs.txt.
 _zfs_try_mkfs_dev()
 {
-	$ZPOOL_PROG create -f $ZFS_SCRATCH_MKFS_OPTS $MKFS_OPTIONS \
-		$SCRATCH_ZPOOL_NAME $* && _zfs_set_default_recordsize
+	_notrun "ZFS mounts a pool by dataset name, not by backing device; cannot mkfs a caller-supplied device"
 }
 
 # Emit the mount-source argument used by _scratch_mount_options. For ZFS the

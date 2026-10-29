@@ -118,25 +118,25 @@ generic/275
 generic/387
 generic/511
 
-# Tests that stack another block layer (LVM, dm-error, dm-thin, dmhugedisk)
+# Tests that make a filesystem on a device of their own (an LVM volume,
+# a loop image, a dmhugedisk device) skip themselves on ZFS. _mkfs_dev
+# reaches _zfs_try_mkfs_dev, which calls _notrun because a pool mounts by
+# dataset name, not by its device. That covers 081, 108, 361, 563, 620
+# and 648, so they are not listed here. generic/173 skips itself on ZFS
+# as well.
+
+# Tests that stack another block layer (dm-error, dm-thin)
 # on top of the scratch device. Doesn't work when the scratch device is
 # owned by an imported zpool — would need ZFS-aware setup helpers that
 # export the pool, build the dm/LVM stack, then re-create the pool on top.
 # Several sub-categories with different mechanisms but the same root cause:
-#   LVM (pvcreate/vgcreate/lvcreate, including dm-snapshot via lvcreate):
-#     081, 108
 #   dm-error CoW failure-injection (most are reflink + dm-error variants;
 #     dm-error setup is what blocks them, not the reflink path):
 #     250, 252, 265-268, 271-272, 276, 278-279, 281-283, 329, 331, 338,
-#     441, 475, 484, 648, 753
+#     441, 475, 484, 753
 #   dm-thin (would auto-notrun via _require_dm_target on kernels without
 #     dm-thin loaded; we keep them explicit since modprobe usually succeeds):
 #     347, 405
-#   dmhugedisk (likewise auto-notrun via _require_dmhugedisk on kernels
-#     without it):
-#     620
-generic/081
-generic/108
 generic/250
 generic/252
 generic/265
@@ -159,8 +159,6 @@ generic/405
 generic/441
 generic/475
 generic/484
-generic/620
-generic/648
 generic/753
 
 # Mount-shared-subtree tests that bypass _scratch_mount and call
@@ -182,12 +180,6 @@ generic/589
 # doesn't map cleanly. Root cause not re-characterized on the current
 # branch; preserved as-is.
 generic/224
-
-# Test creates a FS image inside SCRATCH_MNT, creates a loop device for it,
-# then calls _mkfs_dev on the loop dev — which for us becomes `zpool create
-# /dev/loopN` and fails ("invalid character '/' in pool name"). Nested-
-# zpool-on-loop isn't supported by our helpers; structural.
-generic/361
 
 # fsx soaks that trip ZFS' DIO/buffered/io_uring CoW races. 091 fails fsx
 # READ BAD DATA only when recordsize < 128K (we run with 64K). 263 is the
@@ -224,11 +216,6 @@ generic/564
 # ZFS correctness issue.
 generic/363
 
-# ZFS doesn't implement cgroup-aware writeback accounting (same as most
-# non-btrfs/non-xfs filesystems). Tracked upstream as openzfs/zfs#13662
-# "Annotate writeback I/O to the correct cgroup" (open).
-generic/563
-
 # open_by_handle on a kept-open-but-unlinked file: ZFS returns ESTALE (116)
 # after drop_caches, where ext4/xfs/btrfs return success. ZFS keeps unlinked-
 # but-referenced inodes on its on-disk unlinked set, but fh_to_dentry doesn't
@@ -243,14 +230,6 @@ generic/467
 # and assumes random offsets always yield an entry; that assumption is
 # fs-specific and incompatible with hash-cookie directories like ZFS.
 generic/676
-
-# Reflink + mmap CoW on a full filesystem: after filling the fs to ENOSPC,
-# the test expects the next mmap CoW store to fault SIGBUS (out of space to
-# break the shared extent). ZFS returns cleanly instead (no SIGBUS), so the
-# test's SIGBUS handler never fires. Same reflink/CoW space-accounting family
-# as the sub-recordsize reflink bucket; ZFS doesn't reserve-on-fault the way
-# the test assumes.
-generic/173
 
 # idmapped-mounts nested user namespace: vfstest/idmapped-mounts'
 # nested_userns case fails at sys_mount_setattr when re-mapping an already

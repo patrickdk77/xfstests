@@ -442,6 +442,11 @@ _try_scratch_mount()
 		_overlay_scratch_mount $*
 		return $?
 	fi
+	# Re-import the pool if a flakey device caused it to be exported
+	# on the matching unmount above.
+	if [ "$FSTYP" = "zfs" ] && [ -n "$NON_FLAKEY_DEV" ]; then
+		_zfs_flakey_import
+	fi
 	_mount -t $FSTYP$FUSE_SUBTYP `_scratch_mount_options $*`
 	mount_ret=$?
 	[ $mount_ret -ne 0 ] && return $mount_ret
@@ -523,6 +528,14 @@ _scratch_unmount()
 		;;
 	btrfs | zfs)
 		_unmount $SCRATCH_MNT
+		# While a flakey device is in play, unmounting the dataset
+		# is not enough: the pool stays imported and its ARC keeps
+		# serving writes the target dropped, so a test would see a
+		# filesystem that survived a power cut it never took.
+		# Export so the next mount reads only what reached disk.
+		if [ "$FSTYP" = "zfs" ] && [ -n "$NON_FLAKEY_DEV" ]; then
+			_zfs_flakey_export
+		fi
 		;;
 	tmpfs)
 		_unmount $SCRATCH_MNT
@@ -2578,16 +2591,11 @@ _require_dm_target()
 	_require_sane_bdev_flush $SCRATCH_DEV
 	_require_command "$DMSETUP_PROG" dmsetup
 
-	# dm-error is supported on ZFS: common/dmerror rebuilds the
-	# scratch pool on top of the dm device with failmode=continue,
-	# so a whole-device error returns EIO and is recovered with
-	# 'zpool clear' (see _zfs_dmerror_init).  dm-flakey has no such
-	# ZFS integration yet, so gate it until that is added.
-	case "$FSTYP:$target" in
-	zfs:flakey)
-		_notrun "ZFS dm-flakey support not implemented"
-		;;
-	esac
+	# dm-error and dm-flakey are both supported on ZFS: common/dmerror
+	# and common/dmflakey build the scratch pool on top of the dm
+	# device with failmode=continue, and the flakey path exports the
+	# pool around table swaps so dropped writes are not simply served
+	# back out of the ARC (see _zfs_dmerror_init, _zfs_flakey_init).
 
 	case $target in
 	stripe|linear|log-writes)

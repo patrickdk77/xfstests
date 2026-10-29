@@ -14,9 +14,12 @@ export FLAKEY_LOGNAME="flakey-logtest.$seq"
 
 _init_flakey()
 {
-	if [ "$FSTYP" == "zfs" ]; then
-		_notrun "ZFS broken with flakey"
-	fi
+	# An imported pool holds the backing disk open, so device-mapper
+	# cannot claim it and the table load fails with EBUSY. Release it
+	# before building the flakey device on top, exactly as
+	# _zfs_dmerror_init does.
+	[ "$FSTYP" = "zfs" ] && _zfs_destroy_scratch_pool
+
 	# Scratch device
 	if [ -z "$NON_FLAKEY_DEV" ]; then
 		# Set up the device switch
@@ -33,6 +36,10 @@ _init_flakey()
 	FLAKEY_TABLE_ERROR="0 $BLK_DEV_SIZE flakey $backing_dev 0 0 180 1 error_writes"
 	_dmsetup_create $FLAKEY_NAME --table "$FLAKEY_TABLE" || \
 		_fatal "failed to create flakey device"
+
+	# On ZFS the pool must be built on the flakey device rather than
+	# the topology's real disks (see _zfs_flakey_init).
+	[ "$FSTYP" = "zfs" ] && _zfs_flakey_init
 
 	# Realtime device
 	if [ -n "$SCRATCH_RTDEV" ]; then
@@ -80,6 +87,12 @@ _cleanup_flakey()
 	test -n "$NON_FLAKEY_LOGDEV" && $DMSETUP_PROG resume $FLAKEY_LOGNAME &> /dev/null
 	test -n "$NON_FLAKEY_RTDEV" && $DMSETUP_PROG resume $FLAKEY_RTNAME &> /dev/null
 	test -n "$NON_FLAKEY_DEV" && $DMSETUP_PROG resume $FLAKEY_NAME &> /dev/null
+
+	if [ "$FSTYP" = "zfs" ]; then
+		# Release the pool before the dm device goes away, and put
+		# ZFS_SCRATCH_VDEV back to the real disks.
+		_zfs_flakey_cleanup
+	fi
 
 	_unmount $SCRATCH_MNT > /dev/null 2>&1
 

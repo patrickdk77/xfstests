@@ -85,11 +85,18 @@ _zfs_set_default_recordsize()
 }
 
 # Create a fresh scratch zpool/dataset on $SCRATCH_DEV.
+#
+# ZFS_SCRATCH_VDEV may instead carry a complete `zpool create` vdev spec
+# ("mirror d0 d1", "raidz d0 d1 d2 d3", or a plain multi-disk stripe) so a
+# harness can exercise the same tests across pool topologies.  This matters
+# well beyond redundancy: on a single disk every extent reports vdev 0 and
+# a single DVA, so the multi-copy and multi-vdev paths (notably FIEMAP's
+# per-copy extent trees and fe_vdev decoding) are never executed.
 _zfs_scratch_mkfs()
 {
 	_zfs_destroy_scratch_pool
 	$ZPOOL_PROG create -f $ZFS_SCRATCH_MKFS_OPTS $* $MKFS_OPTIONS \
-		$SCRATCH_ZPOOL_NAME $SCRATCH_DEV && \
+		$SCRATCH_ZPOOL_NAME ${ZFS_SCRATCH_VDEV:-$SCRATCH_DEV} && \
 		_zfs_set_default_recordsize
 }
 
@@ -156,6 +163,87 @@ _zfs_scratch_mount_source()
 # needing a reboot.  The pool suspends on the error and stays suspended
 # until 'zpool clear', which _dmerror_load_working_table issues after
 # restoring the linear table.
+# dm-flakey integration.
+#
+# The flakey target simulates power loss by silently dropping writes, or
+# an unreliable device by failing them.  Two things are needed for that
+# to mean anything on ZFS.
+#
+# The pool has to live on the flakey device, so ZFS_SCRATCH_VDEV, which
+# normally names the topology's real disks, is redirected at it for the
+# duration and restored afterwards.
+#
+# The pool also has to be exported and re-imported around the table
+# swaps, not just have its dataset unmounted.  The ARC belongs to the
+# pool, so an unmounted dataset leaves every dropped write still cached
+# in memory and the filesystem would appear to have survived a power cut
+# it never experienced.
+_zfs_flakey_dev()
+{
+	echo "/dev/mapper/$FLAKEY_NAME"
+}
+
+# Tests run _scratch_mkfs before _init_flakey, so by the time the flakey
+# device exists the pool is on the bare disk underneath it and has to be
+# released for device-mapper to claim the disk.  Rebuild the pool on the
+# flakey device here, the same way _zfs_dmerror_init does, so the caller's
+# mount finds a pool whose I/O actually passes through the target.
+_zfs_flakey_init()
+{
+	_zfs_require_scratch_zpool_name
+	ZFS_FLAKEY_SAVED_VDEV="$ZFS_SCRATCH_VDEV"
+	export ZFS_FLAKEY_SAVED_VDEV
+	export ZFS_SCRATCH_VDEV="$(_zfs_flakey_dev)"
+
+	# failmode=continue so failed writes return EIO to the caller
+	# instead of suspending the pool, matching the dm-error setup.
+	$ZPOOL_PROG create -f -o failmode=continue \
+		$ZFS_SCRATCH_MKFS_OPTS $MKFS_OPTIONS \
+		$SCRATCH_ZPOOL_NAME $(_zfs_flakey_dev) || \
+		_fatal "failed to create zpool on dm-flakey device"
+	_zfs_set_default_recordsize
+
+	# Dropping or failing writes makes ZFS log the resulting pool
+	# suspension and recovery as WARNINGs; that noise is expected here.
+	_add_dmesg_filter \
+		"Pool '$SCRATCH_ZPOOL_NAME' has encountered an uncorrectable"
+	_add_dmesg_filter \
+		"Pool '$SCRATCH_ZPOOL_NAME' was suspended and is being resumed"
+}
+
+_zfs_flakey_export()
+{
+	_zfs_require_scratch_zpool_name
+	if $ZPOOL_PROG list -H $SCRATCH_ZPOOL_NAME >/dev/null 2>&1; then
+		$ZPOOL_PROG export -f $SCRATCH_ZPOOL_NAME >/dev/null 2>&1
+	fi
+}
+
+_zfs_flakey_import()
+{
+	_zfs_require_scratch_zpool_name
+	$ZPOOL_PROG list -H $SCRATCH_ZPOOL_NAME >/dev/null 2>&1 && return 0
+	$ZPOOL_PROG import -d /dev/mapper -d /dev -N \
+		$SCRATCH_ZPOOL_NAME >/dev/null 2>&1
+}
+
+_zfs_flakey_cleanup()
+{
+	_zfs_require_scratch_zpool_name
+	$ZPOOL_PROG clear $SCRATCH_ZPOOL_NAME >/dev/null 2>&1
+	_unmount $SCRATCH_MNT >/dev/null 2>&1
+	if $ZPOOL_PROG list -H $SCRATCH_ZPOOL_NAME >/dev/null 2>&1; then
+		$ZPOOL_PROG destroy -f $SCRATCH_ZPOOL_NAME >/dev/null 2>&1
+	fi
+	if [ -n "$ZFS_FLAKEY_SAVED_VDEV" ]; then
+		export ZFS_SCRATCH_VDEV="$ZFS_FLAKEY_SAVED_VDEV"
+	else
+		unset ZFS_SCRATCH_VDEV
+	fi
+	unset ZFS_FLAKEY_SAVED_VDEV
+	ZFS_SCRATCH_MKFS_OPTS="${ZFS_SCRATCH_MKFS_OPTS/ -o failmode=continue/}"
+}
+
 _zfs_dmerror_init()
 {
 	_dmerror_setup "$@"
